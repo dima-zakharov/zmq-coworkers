@@ -13,7 +13,8 @@ import zmq
 import zmq.asyncio
 from pydantic import BaseModel, Field, ConfigDict
 
-IPC_PATH = "ipc:///tmp/benchmark.ipc"
+IPC_PATH_TASKS = "ipc:///tmp/benchmark-tasks.ipc"
+IPC_PATH_RESULTS = "ipc:///tmp/benchmark-results.ipc"
 IPC_FILE = Path("/tmp/benchmark.ipc")
 NUM_WORKERS = 6
 DEFAULT_NUM_TASKS = 50_000
@@ -24,7 +25,7 @@ class TaskData(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
     id: uuid.UUID
     payload: str
-    metadata: dict[str, Any]
+    metadata:[str, Any]
     timestamp: datetime
     processed: bool = Field(default=False)
 
@@ -43,24 +44,28 @@ def create_task() -> dict:
 
 async def worker_async(worker_id: int) -> None:
     ctx = zmq.asyncio.Context.instance()
-    socket = ctx.socket(zmq.DEALER)
-    socket.setsockopt(zmq.IDENTITY, f"worker-{worker_id}".encode())
-    socket.setsockopt(zmq.LINGER, 0)
-    socket.connect(IPC_PATH)
-
-    await socket.send(b"READY")
+    
+    # PULL socket to receive tasks
+    pull_socket = ctx.socket(zmq.PULL)
+    pull_socket.connect(IPC_PATH_TASKS)
+    
+    # PUSH socket to send results
+    push_socket = ctx.socket(zmq.PUSH)
+    push_socket.connect(IPC_PATH_RESULTS)
+    
+    print(f"[worker-{worker_id}] Connected and ready")
 
     while True:
         try:
-            frames = await socket.recv_multipart()
-            data = frames[1]
+            data = await pull_socket.recv()
             
             obj = orjson.loads(data)
             obj["processed"] = True
             obj["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-            await socket.send_multipart([b"", orjson.dumps(obj)])
-        except Exception:
+            await push_socket.send(orjson.dumps(obj))
+        except Exception as e:
+            print(f"[worker-{worker_id}] Error: {e}")
             break
 
 def worker_main(worker_id: int) -> None:
@@ -80,7 +85,7 @@ async def master_async(num_tasks: int, num_workers: int, max_in_flight: int) -> 
     socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
     socket.setsockopt(zmq.LINGER, 0)
     socket.setsockopt(zmq.SNDHWM, 2000) 
-    socket.bind(IPC_PATH)
+    socket.bind("ipc:///tmp/benchmark.ipc")
 
     worker_ids: list[bytes] = []
     print(f"[coordinator] Waiting for {num_workers} workers...")
@@ -172,3 +177,6 @@ if __name__ == "__main__":
     args = parse_args()
     if args.role == "coordinator":
         run_benchmark(args.num_tasks, NUM_WORKERS, args.max_in_flight)
+    elif args.role == "worker":
+        worker_id = 0
+        worker_main(worker_id)
