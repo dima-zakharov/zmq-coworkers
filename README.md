@@ -73,7 +73,7 @@ uv run main.py coordinator 10000 12
 uv run main.py coordinator 1000000 12
 ```
 
-## Performance Benchmarks
+## Performance Benchmarks i5-12500H
 
 The following benchmarks were conducted with 6 workers processing 1,000,000 tasks with varying levels of concurrency (max in-flight tasks):
 
