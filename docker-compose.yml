@@ -1,0 +1,42 @@
+services:
+services:
+  victoria-metrics:
+    container_name: victoria-metrics
+    image: victoriametrics/victoria-metrics:v1.99.0
+    ports:
+      - "8428:8428"
+    volumes:
+      - vmdata:/storage
+    command:
+      - "--storageDataPath=/storage"
+      - "--httpListenAddr=:8428"
+      - "--influxListenAddr=:8428"
+    restart: always
+
+  vmagent:
+    container_name: vmagent
+    image: victoriametrics/vmagent:v1.99.0
+    depends_on:
+      - victoria-metrics
+    ports:
+      - "8429:8429"
+    volumes:
+      - vmagentdata:/vmagentdata
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - "--promscrape.config=/etc/prometheus/prometheus.yml"
+      - "--remoteWrite.url=http://victoria-metrics:8428/api/v1/write"
+    restart: always
+
+  grafana:
+    container_name: grafana
+    image: grafana/grafana:10.4.2
+    depends_on:
+      - victoria-metrics
+    ports:
+      - "3000:3000"
+    restart: always
+
+volumes:
+  vmdata:
+  vmagentdata:
