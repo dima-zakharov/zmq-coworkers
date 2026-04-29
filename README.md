@@ -73,21 +73,22 @@ uv run main.py coordinator 10000 12
 uv run main.py coordinator 1000000 12
 ```
 
-## Benchmark Results
+## Performance Benchmarks
 
-Tests performed with 6 workers and max_in_flight=12:
+The following benchmarks were conducted with 6 workers processing 1,000,000 tasks with varying levels of concurrency (max in-flight tasks):
 
-### Test 1: 100 Tasks
-- **Throughput**: 20,887.86 tasks/s
-- **Avg Latency**: 0.434 ms
+| Max In-Flight | Throughput (tasks/s) | Avg Latency (ms) |
+|---------------|---------------------|------------------|
+| 12            | 28,849.40           | 0.238            |
+| 24            | 29,207.32           | 0.475            |
+| 48            | 27,373.95           | 1.048            |
+| 96            | 26,300.39           | 2.219            |
 
-### Test 2: 10,000 Tasks
-- **Throughput**: 30,129.97 tasks/s
-- **Avg Latency**: 0.229 ms
-
-### Test 3: 1,000,000 Tasks
-- **Status**: Running (results pending)
-- Expected completion time: ~33 seconds at observed throughput
+**Key Observations:**
+- Peak throughput achieved at 24 concurrent tasks: ~29,200 tasks/s
+- Latency increases proportionally with concurrency level
+- Optimal balance between throughput and latency at 12-24 concurrent tasks
+- Higher concurrency (48-96) shows diminishing returns with increased latency
 
 *Note: Results measured on Linux system with 6 worker processes*
 
