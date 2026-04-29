@@ -75,6 +75,8 @@ uv run main.py coordinator 1000000 12
 
 ## Performance Benchmarks i5-12500H
 
+### Python Implementation
+
 The following benchmarks were conducted with 6 workers processing 1,000,000 tasks with varying levels of concurrency (max in-flight tasks):
 
 | Max In-Flight | Throughput (tasks/s) | Avg Latency (ms) |
@@ -89,6 +91,24 @@ The following benchmarks were conducted with 6 workers processing 1,000,000 task
 - Latency increases proportionally with concurrency level
 - Optimal balance between throughput and latency at 12-24 concurrent tasks
 - Higher concurrency (48-96) shows diminishing returns with increased latency
+
+### Rust Implementation
+
+The following benchmarks were conducted with 6 workers processing 1,000,000 tasks:
+
+| Max In-Flight | Throughput (tasks/s) | Avg Latency (ms) |
+|---------------|---------------------|------------------|
+| 12            | 126,778.42          | 0.092            |
+| 24            | 125,457.62          | 0.189            |
+| 48            | 133,246.89          | 0.358            |
+| Default       | 134,885.57          | 0.175            |
+
+**Key Observations:**
+- **4.6x faster** than Python implementation (~135K vs ~29K tasks/s)
+- **Best Throughput**: Default configuration achieves ~135K tasks/second
+- **Lowest Latency**: Max-in-flight of 12 provides ultra-low latency (0.092ms)
+- **Trade-off**: Higher max-in-flight values increase throughput slightly but also increase latency
+- **Optimal Balance**: Default settings provide excellent throughput with reasonable latency
 
 *Note: Results measured on Linux system with 6 worker processes*
 
