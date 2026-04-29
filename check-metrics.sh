@@ -1,3 +1,1 @@
 curl -s -G 'http://localhost:8428/api/v1/export'     -d 'match[]={worker_id="dzgb"}' | jq '.values | length'
-110005
-110005

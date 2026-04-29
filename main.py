@@ -190,6 +190,8 @@ async def master_async(num_tasks: int, num_workers: int, max_in_flight: int) -> 
     print(f"\n=== Results ===")
     print(f"Throughput: {throughput:,.2f} tasks/s")
     print(f"Avg Latency: {avg_latency:.3f} ms")
+    print("[coordinator] Waiting for metrics to flush...")
+    await asyncio.sleep(5) # Даем воркерам 5 секунд дослать остатки    
 
 def run_benchmark(num_tasks: int, num_workers: int, max_in_flight: int) -> None:
     procs = []
