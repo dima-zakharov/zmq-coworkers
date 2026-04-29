@@ -2,103 +2,71 @@
 import argparse
 import asyncio
 import multiprocessing as mp
-import os
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import orjson
 import zmq
 import zmq.asyncio
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 IPC_PATH = "ipc:///tmp/benchmark.ipc"
 IPC_FILE = Path("/tmp/benchmark.ipc")
 NUM_WORKERS = 6
 DEFAULT_NUM_TASKS = 50_000
+MAX_IN_FLIGHT = 24
 
 
 class TaskData(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     id: uuid.UUID
     payload: str
-    metadata: Dict[str, Any]
+    metadata: dict[str, Any]
     timestamp: datetime
     processed: bool = Field(default=False)
 
-    class Config:
-        arbitrary_types_allowed = True
-
-
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="ZeroMQ coordinator/worker benchmark")
-    parser.add_argument(
-        "role",
-        choices=["coordinator", "worker"],
-        help="Run as coordinator or worker",
-    )
-    parser.add_argument(
-        "num_tasks",
-        nargs="?",
-        type=int,
-        default=DEFAULT_NUM_TASKS,
-        help=f"Number of tasks for coordinator (default: {DEFAULT_NUM_TASKS})",
-    )
-    parser.add_argument(
-        "--worker-id",
-        type=int,
-        default=0,
-        help="Worker identifier when running in worker mode",
-    )
-    return parser.parse_args()
-
-
-def make_task_payload() -> Tuple[str, Dict[str, Any]]:
+def create_task() -> dict:
     payload = "x" * 1500
     metadata = {f"key_{i}": "value_" + ("y" * 20) for i in range(20)}
-    return payload, metadata
+    return {
+        "id": str(uuid.uuid4()),
+        "payload": payload,
+        "metadata": metadata,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "processed": False,
+    }
 
-
-PAYLOAD_TEMPLATE, METADATA_TEMPLATE = make_task_payload()
-
-
-def create_task() -> TaskData:
-    return TaskData(
-        id=uuid.uuid4(),
-        payload=PAYLOAD_TEMPLATE,
-        metadata=METADATA_TEMPLATE,
-        timestamp=datetime.now(timezone.utc),
-        processed=False,
-    )
-
+# --- WORKER LOGIC ---
 
 async def worker_async(worker_id: int) -> None:
     ctx = zmq.asyncio.Context.instance()
     socket = ctx.socket(zmq.DEALER)
     socket.setsockopt(zmq.IDENTITY, f"worker-{worker_id}".encode())
+    socket.setsockopt(zmq.LINGER, 0)
     socket.connect(IPC_PATH)
 
     await socket.send(b"READY")
 
     while True:
-        frames = await socket.recv_multipart()
-        if len(frames) != 2:
-            continue
+        try:
+            frames = await socket.recv_multipart()
+            data = frames[1]
+            
+            obj = orjson.loads(data)
+            obj["processed"] = True
+            obj["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-        _, data = frames
-        obj = orjson.loads(data)
-        task = TaskData.model_validate(obj)
-        task.processed = True
-        task.timestamp = datetime.now(timezone.utc)
-
-        out_bytes = orjson.dumps(task.model_dump(mode="json"))
-        await socket.send_multipart([b"", out_bytes])
-
+            await socket.send_multipart([b"", orjson.dumps(obj)])
+        except Exception:
+            break
 
 def worker_main(worker_id: int) -> None:
     asyncio.run(worker_async(worker_id))
 
+# --- MASTER LOGIC ---
 
 async def master_async(num_tasks: int, num_workers: int) -> None:
     if IPC_FILE.exists():
@@ -109,91 +77,97 @@ async def master_async(num_tasks: int, num_workers: int) -> None:
 
     ctx = zmq.asyncio.Context.instance()
     socket = ctx.socket(zmq.ROUTER)
+    socket.setsockopt(zmq.ROUTER_MANDATORY, 1)
+    socket.setsockopt(zmq.LINGER, 0)
+    socket.setsockopt(zmq.SNDHWM, 2000) 
     socket.bind(IPC_PATH)
 
-    worker_ids: List[bytes] = []
-    print(f"[coordinator] Waiting for {num_workers} workers to register...")
+    worker_ids: list[bytes] = []
+    print(f"[coordinator] Waiting for {num_workers} workers...")
 
     while len(worker_ids) < num_workers:
-        frames = await socket.recv_multipart()
-        if len(frames) != 2:
-            continue
-
-        ident, msg = frames
+        ident, msg = await socket.recv_multipart()
         if msg == b"READY":
             worker_ids.append(ident)
-            print(f"[coordinator] Worker registered: {ident.decode(errors='replace')}")
+            print(f"[coordinator] Registered: {ident.decode()}")
 
-    print(f"[coordinator] All workers registered, starting benchmark with {num_tasks} tasks")
-
-    send_times: Dict[uuid.UUID, float] = {}
-    latencies: List[float] = []
-
+    sem = asyncio.Semaphore(MAX_IN_FLIGHT)
+    
+    print ("max in flight", MAX_IN_FLIGHT)
+    print(f"[coordinator] Generating {num_tasks} tasks...")
+    tasks = [create_task() for _ in range(num_tasks)]
+    
+    send_times: dict[str, float] = {}
+    latencies: list[float] = []
     start_time = time.perf_counter()
+    received_count = 0
 
-    for i in range(num_tasks):
-        task = create_task()
-        task_bytes = orjson.dumps(task.model_dump(mode="json"))
-        send_times[task.id] = time.perf_counter()
-        ident = worker_ids[i % num_workers]
-        await socket.send_multipart([ident, b"", task_bytes])
+    async def sender():
+        for i in range(num_tasks):
+            await sem.acquire()
+            
+            task = tasks[i]
+            task_id = task["id"]
+            task_bytes = orjson.dumps(task)
+            
+            send_times[task_id] = time.perf_counter()
+            ident = worker_ids[i % num_workers]
+            
+            try:
+                await socket.send_multipart([ident, b"", task_bytes])
+            except Exception as e:
+                print(f"Send error: {e}")
+                sem.release()
 
-    received = 0
-    while received < num_tasks:
-        frames = await socket.recv_multipart()
-        if len(frames) != 3:
-            continue
+    async def receiver():
+        nonlocal received_count
+        while received_count < num_tasks:
+            ident, empty, data = await socket.recv_multipart()
+            
+            sem.release()
+            
+            obj = orjson.loads(data)
+            task_id = obj["id"]
+            
+            sent = send_times.pop(task_id, None)
+            if sent:
+                latencies.append(time.perf_counter() - sent)
+            
+            received_count += 1
 
-        ident, empty, data = frames
-        _ = ident, empty
-
-        obj = orjson.loads(data)
-        task = TaskData.model_validate(obj)
-        sent = send_times.pop(task.id, None)
-        if sent is None:
-            continue
-
-        latencies.append(time.perf_counter() - sent)
-        received += 1
+    await asyncio.gather(sender(), receiver())
 
     total_time = time.perf_counter() - start_time
-    throughput = num_tasks / total_time if total_time > 0 else float("inf")
-    avg_latency = sum(latencies) / len(latencies) if latencies else 0.0
+    throughput = num_tasks / total_time
+    avg_latency = (sum(latencies) / len(latencies)) * 1000 if latencies else 0
 
-    print("\n=== Benchmark Results ===")
-    print(f"Tasks processed: {num_tasks}")
-    print(f"Workers: {num_workers}")
-    print(f"Total time: {total_time:.6f} s")
+    print(f"\n=== Results ===")
     print(f"Throughput: {throughput:,.2f} tasks/s")
-    print(f"Average latency: {avg_latency * 1000:.3f} ms")
+    print(f"Avg Latency: {avg_latency:.3f} ms")
 
-
-def run_benchmark(num_tasks: int = DEFAULT_NUM_TASKS, num_workers: int = NUM_WORKERS) -> None:
-    procs: List[mp.Process] = []
+def run_benchmark(num_tasks: int, num_workers: int) -> None:
+    procs = []
     ctx = mp.get_context("spawn")
 
     for i in range(num_workers):
-        proc = ctx.Process(target=worker_main, args=(i,))
-        proc.start()
-        procs.append(proc)
+        p = ctx.Process(target=worker_main, args=(i,))
+        p.start()
+        procs.append(p)
 
     try:
         asyncio.run(master_async(num_tasks, num_workers))
     finally:
-        for proc in procs:
-            proc.terminate()
-        for proc in procs:
-            proc.join()
+        for p in procs:
+            p.terminate()
+            p.join()
 
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("role", choices=["coordinator", "worker"], default="coordinator", nargs="?")
+    parser.add_argument("num_tasks", type=int, default=DEFAULT_NUM_TASKS, nargs="?")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    os.environ["PYTHONASYNCIODEBUG"] = "0"
-
     args = parse_args()
-
     if args.role == "coordinator":
-        print(f"--- Starting COORDINATOR (Expects {NUM_WORKERS} workers) ---")
         run_benchmark(args.num_tasks, NUM_WORKERS)
-    elif args.role == "worker":
-        print(f"--- Starting WORKER (PID: {os.getpid()}) ---")
-        asyncio.run(worker_async(worker_id=args.worker_id))
