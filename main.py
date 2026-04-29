@@ -14,7 +14,7 @@ import zmq
 import zmq.asyncio
 from pydantic import BaseModel, Field, ConfigDict
 
-from push_metrics import push_worker_metrics
+from push_metrics import push_worker_metrics_batch
 
 IPC_PATH_TASKS = "ipc:///tmp/benchmark-tasks.ipc"
 IPC_PATH_RESULTS = "ipc:///tmp/benchmark-results.ipc"
@@ -58,31 +58,56 @@ async def worker_async(worker_id: int) -> None:
     
     print(f"[worker-{worker_id}] Connected and ready")
 
+    # Metrics batching configuration
+    BATCH_SIZE = 1000
+    FLUSH_INTERVAL = 1.0  # seconds
+    
+    metrics_buffer: list[float] = []
+    last_flush_time = time.perf_counter()
+
+    async def flush_metrics(client: httpx.AsyncClient, buffer: list[float]):
+        """Flush metrics buffer to VictoriaMetrics."""
+        if buffer:
+            await push_worker_metrics_batch(client, buffer.copy())
+            buffer.clear()
+
     # Create persistent httpx client for metrics
     async with httpx.AsyncClient() as metrics_client:
-        while True:
-            try:
-                # Measure task processing time
-                start = time.perf_counter()
-                
-                data = await pull_socket.recv()
-                
-                obj = orjson.loads(data)
-                obj["processed"] = True
-                obj["timestamp"] = datetime.now(timezone.utc).isoformat()
+        try:
+            while True:
+                try:
+                    # Measure task processing time
+                    start = time.perf_counter()
+                    
+                    data = await pull_socket.recv()
+                    
+                    obj = orjson.loads(data)
+                    obj["processed"] = True
+                    obj["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-                await push_socket.send(orjson.dumps(obj))
-                
-                # Calculate duration and push metrics
-                end = time.perf_counter()
-                duration_ms = (end - start) * 1000
-                
-                # Fire-and-forget metrics push
-                await push_worker_metrics(metrics_client, duration_ms)
-                
-            except Exception as e:
-                print(f"[worker-{worker_id}] Error: {e}")
-                break
+                    await push_socket.send(orjson.dumps(obj))
+                    
+                    # Calculate duration and add to buffer
+                    end = time.perf_counter()
+                    duration_ms = (end - start) * 1000
+                    metrics_buffer.append(duration_ms)
+                    
+                    # Check if we need to flush
+                    current_time = time.perf_counter()
+                    time_since_flush = current_time - last_flush_time
+                    
+                    if len(metrics_buffer) >= BATCH_SIZE or time_since_flush >= FLUSH_INTERVAL:
+                        await flush_metrics(metrics_client, metrics_buffer)
+                        last_flush_time = current_time
+                    
+                except Exception as e:
+                    print(f"[worker-{worker_id}] Error: {e}")
+                    break
+        finally:
+            # Final flush to ensure no metrics are lost
+            if metrics_buffer:
+                print(f"[worker-{worker_id}] Final flush: {len(metrics_buffer)} metrics")
+                await flush_metrics(metrics_client, metrics_buffer)
 
 def worker_main(worker_id: int) -> None:
     asyncio.run(worker_async(worker_id))

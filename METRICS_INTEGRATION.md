@@ -28,9 +28,11 @@ worker_task_duration_ms,worker_id=<hostname>,lang=python value=<duration> <times
 - Converted to async/await pattern using `asyncio`
 - Created persistent `httpx.AsyncClient` for efficient connection reuse
 - Added task timing measurement using `time.perf_counter()`
-- Integrated metrics push after each task completion
-- Used non-blocking ZMQ receive to work with async event loop
-- Maintained fire-and-forget approach for metrics
+- **Implemented metrics batching** to handle high throughput (~6000 tasks/s)
+- Batch flush triggers:
+  - When buffer reaches 1000 metrics
+  - OR when 1 second has passed since last flush
+- Added final flush in `finally` block to prevent metric loss on worker termination
 
 ### 3. Updated `pyproject.toml`
 
@@ -108,12 +110,22 @@ rate(worker_task_duration_ms{lang="python"}[1m])
             └─────────┘      └──────────────────┘
 ```
 
+## Batching Strategy
+
+To handle high throughput (~6000 tasks/s), metrics are batched before sending:
+
+- **Buffer Size**: Collects up to 1000 metrics before flushing
+- **Time-based Flush**: Flushes every 1 second even if buffer isn't full
+- **Final Flush**: Ensures remaining metrics are sent when worker terminates
+- **Performance**: Reduces HTTP requests from 6000/s to ~6/s (1000x improvement)
+
 ## Error Handling
 
 - **Fire-and-forget**: Metrics failures don't interrupt task processing
-- **Short timeout**: 50ms to prevent blocking
+- **Short timeout**: 100ms for batch requests
 - **Silent failures**: Exceptions are caught and ignored
 - **Non-blocking**: Async HTTP calls don't block ZMQ event loop
+- **Graceful shutdown**: Final flush in `finally` block prevents data loss
 
 ## Metrics Details
 
