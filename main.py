@@ -68,7 +68,7 @@ def worker_main(worker_id: int) -> None:
 
 # --- MASTER LOGIC ---
 
-async def master_async(num_tasks: int, num_workers: int) -> None:
+async def master_async(num_tasks: int, num_workers: int, max_in_flight: int) -> None:
     if IPC_FILE.exists():
         try:
             IPC_FILE.unlink()
@@ -91,9 +91,9 @@ async def master_async(num_tasks: int, num_workers: int) -> None:
             worker_ids.append(ident)
             print(f"[coordinator] Registered: {ident.decode()}")
 
-    sem = asyncio.Semaphore(MAX_IN_FLIGHT)
+    sem = asyncio.Semaphore(max_in_flight)
     
-    print ("max in flight", MAX_IN_FLIGHT)
+    print ("max in flight", max_in_flight)
     print(f"[coordinator] Generating {num_tasks} tasks...")
     tasks = [create_task() for _ in range(num_tasks)]
     
@@ -145,7 +145,7 @@ async def master_async(num_tasks: int, num_workers: int) -> None:
     print(f"Throughput: {throughput:,.2f} tasks/s")
     print(f"Avg Latency: {avg_latency:.3f} ms")
 
-def run_benchmark(num_tasks: int, num_workers: int) -> None:
+def run_benchmark(num_tasks: int, num_workers: int, max_in_flight: int) -> None:
     procs = []
     ctx = mp.get_context("spawn")
 
@@ -155,7 +155,7 @@ def run_benchmark(num_tasks: int, num_workers: int) -> None:
         procs.append(p)
 
     try:
-        asyncio.run(master_async(num_tasks, num_workers))
+        asyncio.run(master_async(num_tasks, num_workers, max_in_flight))
     finally:
         for p in procs:
             p.terminate()
@@ -165,9 +165,10 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("role", choices=["coordinator", "worker"], default="coordinator", nargs="?")
     parser.add_argument("num_tasks", type=int, default=DEFAULT_NUM_TASKS, nargs="?")
+    parser.add_argument("max_in_flight", type=int, default=MAX_IN_FLIGHT, nargs="?")
     return parser.parse_args()
 
 if __name__ == "__main__":
     args = parse_args()
     if args.role == "coordinator":
-        run_benchmark(args.num_tasks, NUM_WORKERS)
+        run_benchmark(args.num_tasks, NUM_WORKERS, args.max_in_flight)
