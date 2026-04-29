@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "httpx>=0.28.1",
     "orjson>=3.11.8",
     "pydantic>=2.13.3",
     "pyzmq>=27.1.0",

@@ -108,7 +108,48 @@ Task identification is handled at the **application layer** via UUIDs, as the PU
 
 ## Requirements
 * **Rust**: `tokio`, `zmq`, `serde_json`, `uuid`, `chrono`.
-* **Python**: `pyzmq`, `orjson`, `pydantic`.
+* **Python**: `pyzmq`, `orjson`, `pydantic`, `httpx`.
+
+---
+
+## Monitoring with VictoriaMetrics
+
+The Python workers are integrated with VictoriaMetrics for performance monitoring.
+
+### Metrics Collected
+
+- **worker_task_processed**: Counter incremented for each completed task
+- **worker_task_duration_ms**: Task processing latency in milliseconds
+
+Both metrics include tags:
+- `worker_id`: Hostname of the worker
+- `lang`: Set to "python"
+
+### Setup
+
+1. Start VictoriaMetrics and vmagent:
+```bash
+docker-compose up -d
+```
+
+2. Workers automatically send metrics to vmagent at `http://localhost:8429/write`
+
+3. View metrics at VictoriaMetrics UI: `http://localhost:8428`
+
+### Query Examples
+
+```promql
+# Total tasks processed by Python workers
+worker_task_processed{lang="python"}
+
+# Task duration over time
+worker_task_duration_ms{lang="python"}
+
+# Average task duration (rate over 1 minute)
+rate(worker_task_duration_ms{lang="python"}[1m])
+```
+
+See `METRICS_INTEGRATION.md` for detailed implementation information.
 
 ---
 **License**: Apache License 2.0

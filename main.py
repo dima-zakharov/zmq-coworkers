@@ -8,10 +8,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import orjson
 import zmq
 import zmq.asyncio
 from pydantic import BaseModel, Field, ConfigDict
+
+from push_metrics import push_worker_metrics
 
 IPC_PATH_TASKS = "ipc:///tmp/benchmark-tasks.ipc"
 IPC_PATH_RESULTS = "ipc:///tmp/benchmark-results.ipc"
@@ -55,18 +58,31 @@ async def worker_async(worker_id: int) -> None:
     
     print(f"[worker-{worker_id}] Connected and ready")
 
-    while True:
-        try:
-            data = await pull_socket.recv()
-            
-            obj = orjson.loads(data)
-            obj["processed"] = True
-            obj["timestamp"] = datetime.now(timezone.utc).isoformat()
+    # Create persistent httpx client for metrics
+    async with httpx.AsyncClient() as metrics_client:
+        while True:
+            try:
+                # Measure task processing time
+                start = time.perf_counter()
+                
+                data = await pull_socket.recv()
+                
+                obj = orjson.loads(data)
+                obj["processed"] = True
+                obj["timestamp"] = datetime.now(timezone.utc).isoformat()
 
-            await push_socket.send(orjson.dumps(obj))
-        except Exception as e:
-            print(f"[worker-{worker_id}] Error: {e}")
-            break
+                await push_socket.send(orjson.dumps(obj))
+                
+                # Calculate duration and push metrics
+                end = time.perf_counter()
+                duration_ms = (end - start) * 1000
+                
+                # Fire-and-forget metrics push
+                await push_worker_metrics(metrics_client, duration_ms)
+                
+            except Exception as e:
+                print(f"[worker-{worker_id}] Error: {e}")
+                break
 
 def worker_main(worker_id: int) -> None:
     asyncio.run(worker_async(worker_id))
