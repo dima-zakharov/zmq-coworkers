@@ -12,16 +12,15 @@ async def push_metrics(client, values):
     Send a batch of metrics to VictoriaMetrics using Influx line protocol.
     Each metric is given a unique timestamp to prevent deduplication.
     """
-    # Get current time in nanoseconds
-    base_ts = time.time_ns()
-    
+    base_ts_ms = int(time.time() * 1000)
+
     lines = []
     for i, v in enumerate(values):
-        # We subtract 'i' milliseconds (in ns) to ensure every 
-        # metric in the batch has a distinct, unique timestamp.
-        ts = base_ts - (i * 1_000_000)
+        # Subtract 100ms per value so they are clearly separated on a graph
+        ts = base_ts_ms - (i * 100) 
+        # VictoriaMetrics Influx parser will auto-detect ms if the number is the right length,
+        # but it's safer to tell your ingestion tool the precision is 'ms'
         lines.append(f"worker_task_processed,lang=python value={v} {ts}")
-
     payload = "\n".join(lines) + "\n"
 
     try:
@@ -44,14 +43,14 @@ async def push_metrics(client, values):
 async def main():
     print(f"🚀 Testing VictoriaMetrics ingestion at {URL}\n")
 
-    async with httpx.AsyncClient(timeout=10.0, http2=False) as client:
+    async with httpx.AsyncClient(timeout=10.0) as client:
         print("[Test 1] Small batch...")
         await push_metrics(client, [1.1, 2.2, 3.3])
 
         await asyncio.sleep(0.5)
 
         print("\n[Test 2] Large batch...")
-        await push_metrics(client, [float(i) for i in range(100)])
+        await push_metrics(client, [100*float(i) for i in range(100)])
 
 if __name__ == "__main__":
     asyncio.run(main())

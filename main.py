@@ -22,7 +22,7 @@ IPC_FILE = Path("/tmp/benchmark.ipc")
 NUM_WORKERS = 6
 DEFAULT_NUM_TASKS = 50_000
 MAX_IN_FLIGHT = 24
-
+DELAY=0
 
 class TaskData(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -84,6 +84,9 @@ async def worker_async(worker_id: int) -> None:
                     obj = orjson.loads(data)
                     obj["processed"] = True
                     obj["timestamp"] = datetime.now(timezone.utc).isoformat()
+                    
+                    if DELAY > 0:
+                        await asyncio.sleep(DELAY)
 
                     await push_socket.send(orjson.dumps(obj))
                     
